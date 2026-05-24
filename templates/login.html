@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>보호자 로그인 - 스마트 욕실 낙상 감지</title>
+  <link rel="stylesheet" href="static/style.css" />
+</head>
+<body class="login-body">
+
+  <div class="login-wrapper">
+
+    <!-- 로고 영역 -->
+    <div class="login-logo">
+      <span class="login-logo-icon">🚿</span>
+    </div>
+
+    <!-- 로그인 카드 -->
+    <div class="login-card">
+      <h1 class="login-title">스마트 욕실 낙상 감지</h1>
+      <p class="login-subtitle">보호자 전용 대시보드</p>
+      <p class="login-desc">관리자로부터 받은 접근 코드를 입력하세요.</p>
+
+      <!-- 오류 메시지 (로그인 실패 시 서버에서 전달) -->
+      {% if error %}
+      <div class="login-error">
+        ⚠️ {{ error }}
+      </div>
+      {% endif %}
+
+      <!-- 로그인 폼 -->
+      <form method="POST" action="login" class="login-form">
+        <div class="login-input-wrap">
+          <label for="code" class="login-label">접근 코드</label>
+          <input
+            type="password"
+            id="code"
+            name="code"
+            class="login-input"
+            placeholder="접근 코드 입력"
+            autocomplete="off"
+            autofocus
+            required
+          />
+        </div>
+        <button type="submit" class="login-btn">
+          🔓 대시보드 입장
+        </button>
+      </form>
+
+      <p class="login-hint">접근 코드를 모르시면 관리자에게 문의하세요.</p>
+    </div>
+
+    <p class="login-footer">Smart Bathroom Fall Detection System &nbsp;|&nbsp; Raspberry Pi 5</p>
+  </div>
+
+</body>
+</html>

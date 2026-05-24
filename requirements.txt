@@ -1,0 +1,5 @@
+# 스마트 욕실 낙상 감지 대시보드 - 의존 패키지
+# 설치: pip install -r requirements.txt
+
+flask>=3.0.0          # 웹 서버 프레임워크
+python-dotenv>=1.0.0  # .env 파일 자동 로드

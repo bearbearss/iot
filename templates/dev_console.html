@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Smart Bath Guard · Developer Console</title>
+  <link rel="stylesheet" href="static/style.css"/>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="topbar-logo">
+      <span class="logo-emoji">🛠</span>
+      <div>
+        <div class="logo-title">Developer Console</div>
+        <div class="logo-sub">Smart Bath Guard · Hardware Debug</div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <a href="./"      class="topbar-link">📊 대시보드</a>
+      <a href="settings" class="topbar-link">⚙️ 설정</a>
+      <a href="logout"  class="logout-btn">🔒 로그아웃</a>
+    </div>
+  </div>
+</header>
+
+<main class="main-wrap" style="max-width:1100px">
+
+  <!-- ── 연결 테스트 ─────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-hdr">
+      <span>🔌 하드웨어 연결 테스트</span>
+      <span class="tag tag-scan" id="pingStatus">대기</span>
+    </div>
+    <div class="conn-test-row">
+      <button class="cbtn cbtn-cyan"  onclick="pingEsp32()">📡 ESP32 핑</button>
+      <button class="cbtn cbtn-green" onclick="testData()">📤 테스트 POST 전송</button>
+      <button class="cbtn cbtn-purple" onclick="refreshAll()">🔄 전체 새로고침</button>
+      <div class="ping-result" id="pingResult"></div>
+    </div>
+    <div class="conn-status-grid" id="connGrid" style="margin-top:12px">
+      <div class="cs-item" id="cs-esp32-c"><div class="cs-dot" id="csDotEsp32"></div><div><div class="cs-name">ESP32</div><div class="cs-detail" id="csEsp32Detail">—</div></div></div>
+      <div class="cs-item" id="cs-pico-c"> <div class="cs-dot" id="csDotPico"></div> <div><div class="cs-name">Pico</div><div class="cs-detail" id="csPicoDetail">—</div></div></div>
+      <div class="cs-item cs-ok">          <div class="cs-dot cs-dot-green"></div>   <div><div class="cs-name">Raspberry Pi</div><div class="cs-detail">서버 실행 중</div></div></div>
+      <div class="cs-item" id="cs-cf-c">  <div class="cs-dot" id="csDotCf"></div>   <div><div class="cs-name">Cloudflare</div><div class="cs-detail" id="csCfDetail">—</div></div></div>
+    </div>
+  </div>
+
+  <div class="dev-cols">
+
+    <!-- ── 왼쪽: 라이브 데이터 ──────────────────────────── -->
+    <div class="dev-left">
+
+      <div class="card">
+        <div class="card-hdr">
+          <span>📥 마지막 ESP32 수신 데이터</span>
+          <span class="tag" id="dataAge">—</span>
+        </div>
+        <pre class="json-view" id="jsonLatest">{}</pre>
+      </div>
+
+      <div class="card">
+        <div class="card-hdr">
+          <span>🏗 전체 상태 스냅샷</span>
+          <button class="cbtn cbtn-cyan" style="padding:4px 10px;font-size:.75rem" onclick="loadRaw()">새로고침</button>
+        </div>
+        <pre class="json-view json-view-sm" id="jsonRaw">{}</pre>
+      </div>
+
+    </div>
+
+    <!-- ── 오른쪽: API 테스터 + 가이드 ─────────────────── -->
+    <div class="dev-right">
+
+      <!-- API 테스터 -->
+      <div class="card">
+        <div class="card-hdr">🧪 API 직접 테스트</div>
+        <div class="api-tester">
+          <div class="at-row">
+            <select class="at-method" id="atMethod">
+              <option>POST</option><option>GET</option>
+            </select>
+            <input class="at-url" id="atUrl" value="data" placeholder="/data"/>
+          </div>
+          <textarea class="at-body" id="atBody" rows="5" placeholder='{"height":165,"angle":88,"mmwave":true,"door":"closed","fall_candidate":false,"fall_detected":false,"tof_status":"normal","servo_status":"stopped"}'></textarea>
+          <button class="cbtn cbtn-cyan" style="width:100%;margin-top:8px" onclick="runApi()">▶ 전송</button>
+          <div class="at-status" id="atStatus"></div>
+          <pre class="json-view json-view-sm" id="atResponse" style="margin-top:8px">(응답 대기 중)</pre>
+        </div>
+      </div>
+
+      <!-- 빠른 테스트 버튼 -->
+      <div class="card">
+        <div class="card-hdr">⚡ 빠른 시나리오 테스트</div>
+        <div class="qt-grid">
+          <button class="cbtn cbtn-green"  onclick="quickTest('normal')">✅ 정상</button>
+          <button class="cbtn cbtn-purple" onclick="quickTest('height_drop')">📉 높이급감</button>
+          <button class="cbtn cbtn-orange" onclick="quickTest('warning')">⚠️ 낙상의심</button>
+          <button class="cbtn cbtn-red"    onclick="quickTest('fall')">🆘 낙상감지</button>
+          <button class="cbtn cbtn-cyan"   onclick="quickTest('enter')">🚶 입실</button>
+          <button class="cbtn cbtn-gray"   onclick="quickTest('exit')">🚪 퇴실</button>
+          <button class="cbtn cbtn-orange" onclick="quickTest('long_stay')">⏱ 장시간</button>
+          <button class="cbtn cbtn-green"  onclick="quickTest('respond')">🆗 응답</button>
+        </div>
+        <div class="qt-msg" id="qtMsg"></div>
+      </div>
+
+      <!-- 하드웨어 연결 가이드 -->
+      <div class="card">
+        <div class="card-hdr">📖 하드웨어 연동 체크리스트</div>
+        <div class="guide-steps">
+          <div class="gs-step" data-step="1">
+            <div class="gs-num">1</div>
+            <div class="gs-body">
+              <div class="gs-title">Raspberry Pi — Flask 서버 실행</div>
+              <code class="gs-code">cd smart_bathroom_dashboard<br>source venv/bin/activate<br>python app.py</code>
+              <div class="gs-check">✔ 이 페이지가 보이면 완료</div>
+            </div>
+          </div>
+          <div class="gs-step" data-step="2">
+            <div class="gs-num">2</div>
+            <div class="gs-body">
+              <div class="gs-title">Raspberry Pi IP 확인</div>
+              <code class="gs-code">hostname -I</code>
+              <div class="gs-check">예: 192.168.0.15 → ESP32 config.h 의 SERVER_IP 에 입력</div>
+            </div>
+          </div>
+          <div class="gs-step" data-step="3">
+            <div class="gs-num">3</div>
+            <div class="gs-body">
+              <div class="gs-title">ESP32 config.h 수정 후 업로드</div>
+              <code class="gs-code">#define WIFI_SSID     "공유기이름"<br>#define WIFI_PASSWORD "비밀번호"<br>#define SERVER_IP     "192.168.0.15"</code>
+              <div class="gs-check">Arduino IDE → 업로드 → Serial Monitor 확인</div>
+            </div>
+          </div>
+          <div class="gs-step" data-step="4">
+            <div class="gs-num">4</div>
+            <div class="gs-body">
+              <div class="gs-title">ESP32 연결 확인</div>
+              <div class="gs-check">Serial Monitor 에 <code>[WiFi Connected]</code> 표시<br>이 페이지 상단에 ESP32 녹색 점 표시</div>
+            </div>
+          </div>
+          <div class="gs-step" data-step="5">
+            <div class="gs-num">5</div>
+            <div class="gs-body">
+              <div class="gs-title">센서 데이터 수신 확인</div>
+              <div class="gs-check">왼쪽 "마지막 ESP32 수신 데이터" 에 실제 값 표시</div>
+            </div>
+          </div>
+          <div class="gs-step" data-step="6">
+            <div class="gs-num">6</div>
+            <div class="gs-body">
+              <div class="gs-title">DFPlayer / mmWave / 문센서 테스트</div>
+              <div class="gs-check">위 빠른 테스트 버튼 → 낙상 시나리오 → 소리 확인</div>
+            </div>
+          </div>
+          <div class="gs-step" data-step="7">
+            <div class="gs-num">7</div>
+            <div class="gs-body">
+              <div class="gs-title">외부 접근 (Cloudflare Tunnel)</div>
+              <code class="gs-code">/tmp/cloudflared tunnel --url http://localhost:5000</code>
+              <div class="gs-check">출력된 URL → 보호자 스마트폰에서 접속</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</main>
+
+<footer class="page-footer">Smart Bath Guard · Developer Console</footer>
+
+<script>
+const BASE = window.location.pathname.replace(/dev-console\/?$/, "");
+let autoRefresh = null;
+
+async function loadRaw() {
+  const res = await fetch(BASE + "api/raw-data");
+  if (res.status === 401) { window.location.href = BASE + "login"; return; }
+  const d   = await res.json();
+
+  // 마지막 수신 데이터
+  document.getElementById("jsonLatest").textContent = JSON.stringify(d.latest_data, null, 2);
+
+  // 데이터 나이
+  const ts = d.latest_data?.timestamp;
+  document.getElementById("dataAge").textContent = ts ? `최신: ${ts.split(" ")[1]}` : "없음";
+
+  // 전체 스냅샷 (latest_data 제외)
+  const { latest_data, ...rest } = d;
+  document.getElementById("jsonRaw").textContent = JSON.stringify(rest, null, 2);
+
+  // 연결 상태
+  await loadConnStatus();
+}
+
+async function loadConnStatus() {
+  const res = await fetch(BASE + "api/connection-status");
+  if (!res.ok) return;
+  const d = await res.json();
+
+  setCS("csDotEsp32","cs-esp32-c","csEsp32Detail", d.esp32.ok,
+        d.esp32.ok ? `연결됨 · ${d.esp32.ip} · ${d.esp32.ago_s}초 전` : "연결 없음");
+  setCS("csDotPico","cs-pico-c","csPicoDetail", d.pico.ok,
+        d.pico.ok ? "정상 (servo 응답)" : "확인 불가");
+  setCS("csDotCf","cs-cf-c","csCfDetail", d.cloudflare.ok,
+        d.cloudflare.ok ? d.cloudflare.url : "터널 없음");
+}
+
+function setCS(dotId, cardId, detailId, ok, detail) {
+  const dot  = document.getElementById(dotId);
+  const card = document.getElementById(cardId);
+  const det  = detailId ? document.getElementById(detailId) : null;
+  if (dot)  dot.className  = ok ? "cs-dot cs-dot-green" : "cs-dot cs-dot-red";
+  if (card) card.className = ok ? "cs-item cs-ok" : "cs-item cs-err";
+  if (det)  det.textContent = detail;
+}
+
+async function pingEsp32() {
+  const tag = document.getElementById("pingStatus");
+  const res = document.getElementById("pingResult");
+  tag.textContent = "확인 중…";
+  tag.className   = "tag";
+  const t0 = Date.now();
+  await loadConnStatus();
+  const cs = await fetch(BASE + "api/connection-status").then(r=>r.json());
+  const ms = Date.now() - t0;
+  if (cs.esp32.ok) {
+    tag.textContent = `ESP32 연결됨 (${ms}ms)`;
+    tag.className   = "tag tag-ok";
+    res.textContent = `✅ ESP32 연결 확인 · IP: ${cs.esp32.ip} · ${cs.esp32.ago_s}초 전 수신`;
+    res.style.color = "var(--green)";
+  } else {
+    tag.textContent = "ESP32 미연결";
+    tag.className   = "tag tag-fall";
+    res.textContent = "❌ ESP32 데이터 없음 — WiFi 연결 및 서버 IP 확인";
+    res.style.color = "var(--red)";
+  }
+}
+
+async function testData() {
+  const payload = { height:165.0, angle:88, tof_status:"normal",
+    mmwave:true, door:"closed", fall_candidate:false,
+    fall_detected:false, servo_status:"stopped" };
+  const res = await fetch(BASE + "data", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(payload)
+  });
+  const d = await res.json();
+  const tag = document.getElementById("pingStatus");
+  tag.textContent = res.ok ? "POST 성공" : "POST 실패";
+  tag.className   = res.ok ? "tag tag-ok" : "tag tag-fall";
+  document.getElementById("pingResult").textContent =
+    res.ok ? `✅ /data POST 성공: ${JSON.stringify(d)}` : "❌ POST 실패";
+  loadRaw();
+}
+
+async function runApi() {
+  const method = document.getElementById("atMethod").value;
+  const url    = BASE + document.getElementById("atUrl").value.replace(/^\//, "");
+  const body   = document.getElementById("atBody").value.trim();
+  const stat   = document.getElementById("atStatus");
+  const resp   = document.getElementById("atResponse");
+  stat.textContent = "요청 중…";
+  try {
+    const opts = { method };
+    if (method === "POST" && body) {
+      opts.headers = { "Content-Type": "application/json" };
+      opts.body    = body;
+    }
+    const res  = await fetch(url, opts);
+    const text = await res.text();
+    stat.textContent  = `HTTP ${res.status} ${res.statusText}`;
+    stat.style.color  = res.ok ? "var(--green)" : "var(--red)";
+    try { resp.textContent = JSON.stringify(JSON.parse(text), null, 2); }
+    catch { resp.textContent = text; }
+  } catch(e) {
+    stat.textContent = "오류: " + e.message;
+    stat.style.color = "var(--red)";
+  }
+}
+
+async function quickTest(type) {
+  const msg = document.getElementById("qtMsg");
+  msg.textContent = `⏳ ${type} 전송 중…`;
+  const res = await fetch(BASE + `test/${type}`, { method:"POST" });
+  msg.textContent = res.ok ? `✅ ${type} 완료` : `❌ ${type} 실패`;
+  msg.style.color = res.ok ? "var(--green)" : "var(--red)";
+  setTimeout(() => { msg.textContent = ""; }, 3000);
+  loadRaw();
+}
+
+function refreshAll() { loadRaw(); }
+
+loadRaw();
+autoRefresh = setInterval(loadRaw, 3000);
+</script>
+</body>
+</html>
