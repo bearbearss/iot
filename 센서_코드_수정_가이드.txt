@@ -1,0 +1,711 @@
+================================================================
+  Smart Bath Guard — 센서 코드 수정 완전 가이드
+  (ToF / mmWave / Pico 서보모터 실제 연동)
+================================================================
+
+이 문서는 현재 더미값(가짜 숫자)으로 동작하는 센서 부분을
+실제 하드웨어 센서로 교체하는 방법을 처음부터 설명합니다.
+
+현재 상태 (지금은 이 더미값으로 전송 중):
+  float height = 165.0;      ← 진짜 ToF 센서값으로 교체 예정
+  int   angle  = 88;         ← 진짜 Pico 서보 각도로 교체 예정
+  bool  mmwave = true;       ← 진짜 mmWave 감지값으로 교체 예정
+
+목표: 위 3줄을 실제 센서에서 읽어온 값으로 바꾸는 것
+
+----------------------------------------------------------------
+전체 센서 구성 요약
+----------------------------------------------------------------
+
+  센서/부품              │ 역할              │ 연결 방식
+  ─────────────────────────────────────────────────────────
+  VL53L0X (ToF 센서)    │ 사람 높이 측정    │ I2C (SDA/SCL)
+  mmWave 레이더 센서     │ 사람 존재 감지    │ GPIO (또는 UART)
+  Raspberry Pi Pico      │ 서보모터 제어     │ UART (시리얼 통신)
+  서보모터 (SG90 등)     │ 센서 각도 회전    │ Pico GPIO
+  ─────────────────────────────────────────────────────────
+
+================================================================
+PART 1. 핀 배치 — config.h 에 추가할 내용
+================================================================
+
+수정 파일: ESP32_example/config.h
+
+---[ 현재 config.h 내용 ] ------------------------------------
+
+  #define DOOR_PIN        27
+  #define LED_PIN         2
+  #define BUTTON_PIN      34
+
+---[ 추가해야 할 내용 ] ----------------------------------------
+
+  아래 내용을 config.h 에 추가합니다.
+  (기존 내용 아래에 붙여넣기)
+
+  // ── ToF 센서 (VL53L0X) — I2C 연결 ──────────────────────
+  #define TOF_SDA_PIN     21    // ESP32 기본 I2C SDA
+  #define TOF_SCL_PIN     22    // ESP32 기본 I2C SCL
+
+  // ── mmWave 레이더 센서 — GPIO 존재 감지 출력 핀 ─────────
+  #define MMWAVE_PIN      35    // mmWave OUT 핀 → ESP32 GPIO35
+                                // (GPIO35는 입력 전용 핀, 풀다운 사용)
+
+  // ── Raspberry Pi Pico UART 수신 핀 ───────────────────────
+  #define PICO_RX_PIN     25    // ESP32 RX ← Pico TX
+  #define PICO_TX_PIN     26    // ESP32 TX → Pico RX (선택사항)
+  #define PICO_BAUD       9600  // 통신 속도
+
+---[ 최종 config.h 전체 모습 ] --------------------------------
+
+  #pragma once
+
+  // WiFi 설정
+  #define WIFI_SSID       "공유기이름"
+  #define WIFI_PASSWORD   "WiFi비밀번호"
+
+  // 서버 설정
+  #define SERVER_IP       "192.168.0.15"
+  #define SERVER_PORT     5000
+
+  // 기존 핀
+  #define DOOR_PIN        27
+  #define LED_PIN         2
+  #define BUTTON_PIN      34
+
+  // ToF 센서 (VL53L0X) I2C 핀
+  #define TOF_SDA_PIN     21
+  #define TOF_SCL_PIN     22
+
+  // mmWave 레이더 핀
+  #define MMWAVE_PIN      35
+
+  // Pico UART 핀
+  #define PICO_RX_PIN     25
+  #define PICO_TX_PIN     26
+  #define PICO_BAUD       9600
+
+  // 타이머
+  #define DATA_INTERVAL_MS   3000
+  #define AUDIO_INTERVAL_MS   500
+  #define WIFI_RETRY_MAX       20
+
+  // 디버그
+  #define DEBUG_SERIAL    true
+  #define DBG(x)   if(DEBUG_SERIAL) Serial.print(x)
+  #define DBGLN(x) if(DEBUG_SERIAL) Serial.println(x)
+  #define DBGF(...)if(DEBUG_SERIAL) Serial.printf(__VA_ARGS__)
+
+
+================================================================
+PART 2. VL53L0X ToF 센서 — 사람 높이 측정
+================================================================
+
+---[ 이게 뭔가요? ] -------------------------------------------
+
+  VL53L0X는 레이저로 거리를 측정하는 센서입니다.
+  욕실 천장에 달아서 바닥까지 거리를 재면
+  사람이 서 있을 때 (약 60~80cm) 와 넘어졌을 때 (약 10~20cm) 를
+  구분할 수 있습니다.
+
+  ※ 측정값은 "센서에서 물체까지의 거리(cm)" 입니다.
+     예: 천장에 달았을 때 아무도 없으면 200cm,
+         사람이 서 있으면 60~80cm,
+         사람이 누워 있으면 150~180cm (사람 위에서 바닥까지)
+
+---[ 배선 연결 방법 ] -----------------------------------------
+
+  VL53L0X 핀    │  ESP32 핀
+  ──────────────┼────────────
+  VCC           │  3.3V
+  GND           │  GND
+  SDA           │  GPIO21
+  SCL           │  GPIO22
+  XSHUT         │  연결 안 함 (선택사항)
+  GPIO1 (INT)   │  연결 안 함
+
+  ※ 반드시 3.3V 에 연결하세요. 5V 연결 시 센서 파손됩니다.
+
+---[ 라이브러리 설치 ] ----------------------------------------
+
+  Arduino IDE → 툴 → 라이브러리 관리 →
+  검색창에 "Adafruit VL53L0X" 입력 → 설치
+
+  또는 검색창에 "VL53L0X" 입력 →
+  "Adafruit VL53L0X" 선택 → 설치
+
+---[ ESP32_dfplayer.ino 수정 방법 ] ---------------------------
+
+  ① 파일 맨 위 #include 부분에 라이브러리 추가:
+
+  현재 코드 (파일 상단 ~line 24):
+  ┌─────────────────────────────────────────────────────────┐
+  │ #include "config.h"                                     │
+  │ #include <WiFi.h>                                       │
+  │ #include <HTTPClient.h>                                 │
+  │ #include <ArduinoJson.h>                                │
+  │ #include <DFRobotDFPlayerMini.h>                        │
+  └─────────────────────────────────────────────────────────┘
+
+  수정 후 (라이브러리 2개 추가):
+  ┌─────────────────────────────────────────────────────────┐
+  │ #include "config.h"                                     │
+  │ #include <WiFi.h>                                       │
+  │ #include <HTTPClient.h>                                 │
+  │ #include <ArduinoJson.h>                                │
+  │ #include <DFRobotDFPlayerMini.h>                        │
+  │ #include <Wire.h>                           // ← 추가   │
+  │ #include <Adafruit_VL53L0X.h>              // ← 추가   │
+  └─────────────────────────────────────────────────────────┘
+
+  ② 전역 변수 선언부에 센서 객체 추가:
+
+  현재 코드 (line 28~29 근처):
+  ┌─────────────────────────────────────────────────────────┐
+  │ HardwareSerial dfSerial(2);                             │
+  │ DFRobotDFPlayerMini myDF;                               │
+  └─────────────────────────────────────────────────────────┘
+
+  수정 후:
+  ┌─────────────────────────────────────────────────────────┐
+  │ HardwareSerial dfSerial(2);                             │
+  │ DFRobotDFPlayerMini myDF;                               │
+  │ Adafruit_VL53L0X tof;            // ← 추가              │
+  │ bool tofReady = false;           // ← 추가              │
+  └─────────────────────────────────────────────────────────┘
+
+  ③ setup() 함수 안에 ToF 초기화 추가:
+
+  현재 setup() 안 (line 79~99 근처, DFPlayer 초기화 아래):
+  ┌─────────────────────────────────────────────────────────┐
+  │   // DFPlayer                                           │
+  │   dfSerial.begin(9600, SERIAL_8N1, 16, 17);            │
+  │   if (!myDF.begin(dfSerial)) {                          │
+  │     DBGLN("[ERROR] DFPlayer 초기화 실패");               │
+  │   } else {                                              │
+  │     DBGLN("[OK] DFPlayer 초기화 완료");                  │
+  │     myDF.volume(15);                                    │
+  │   }                                                     │
+  └─────────────────────────────────────────────────────────┘
+
+  아래에 추가:
+  ┌─────────────────────────────────────────────────────────┐
+  │   // ToF 센서 (VL53L0X) 초기화                          │
+  │   Wire.begin(TOF_SDA_PIN, TOF_SCL_PIN);                 │
+  │   if (!tof.begin()) {                                   │
+  │     DBGLN("[ERROR] VL53L0X 초기화 실패 — 배선 확인");   │
+  │     tofReady = false;                                   │
+  │   } else {                                              │
+  │     DBGLN("[OK] VL53L0X ToF 센서 초기화 완료");         │
+  │     tof.startRangingContinuous();                       │
+  │     tofReady = true;                                    │
+  │   }                                                     │
+  └─────────────────────────────────────────────────────────┘
+
+  ④ sendSensorData() 함수 수정 — 더미값 → 실제 값:
+
+  현재 코드 (line 261~266):
+  ┌─────────────────────────────────────────────────────────┐
+  │   // 지금은 더미값 (실제 센서 코드로 교체하세요):        │
+  │   float height = 165.0;                                 │
+  │   int   angle  = 88;                                    │
+  │   bool  mmwave = true;                                  │
+  │   bool  fallCandidate = false;                          │
+  │   bool  fallDetected  = false;                          │
+  └─────────────────────────────────────────────────────────┘
+
+  수정 후 (ToF 부분만 교체, mmWave와 angle은 다음 파트에서):
+  ┌─────────────────────────────────────────────────────────┐
+  │   // ── ToF 센서 읽기 (VL53L0X) ─────────────────────   │
+  │   float height = 0.0;                                   │
+  │   if (tofReady && tof.isRangeComplete()) {              │
+  │     uint16_t mm = tof.readRangeResult();                │
+  │     height = mm / 10.0;  // mm → cm 변환                │
+  │     if (height > 250.0) height = 0.0;  // 범위 초과 제거│
+  │   }                                                     │
+  │                                                         │
+  │   int   angle  = 88;        // ← PART 4 에서 교체      │
+  │   bool  mmwave = true;      // ← PART 3 에서 교체      │
+  │   bool  fallCandidate = (height > 0 && height < 50.0 && mmwave); │
+  │   bool  fallDetected  = (height > 0 && height < 20.0 && mmwave); │
+  └─────────────────────────────────────────────────────────┘
+
+---[ 테스트 방법 ] --------------------------------------------
+
+  업로드 후 시리얼 모니터(115200 baud)에서:
+  [DATA] 전송 완료 · height=68.3 · ...
+  ↑ 실제 cm 값이 나오면 정상
+
+  테스트:
+  - 센서 앞에 손 가까이 → height 값이 작아짐
+  - 센서 앞에 아무것도 없음 → height 값이 200 이상
+  - 넘어진 상태 시뮬레이션: 센서에서 10~20cm 거리 → fallDetected = true
+
+
+================================================================
+PART 3. mmWave 레이더 센서 — 사람 존재 감지
+================================================================
+
+---[ 이게 뭔가요? ] -------------------------------------------
+
+  mmWave 센서는 미세한 움직임도 감지하는 레이더입니다.
+  사람이 욕실 안에 있으면 true, 없으면 false 를 출력합니다.
+  가만히 앉아 있거나 쓰러져 있어도 감지됩니다.
+
+  대표적인 센서: HLK-LD2410, LD2410B, LD2402
+
+---[ 배선 연결 방법 (GPIO 출력 모드) ] -------------------------
+
+  LD2410 핀      │  ESP32 핀
+  ──────────────┼────────────
+  VCC / 5V      │  5V (또는 3.3V — 제품마다 다름)
+  GND           │  GND
+  OUT (존재)    │  GPIO35
+
+  ※ LD2410의 OUT 핀은:
+     사람 있음 → HIGH (3.3V)
+     사람 없음 → LOW  (0V)
+
+---[ 라이브러리 ] ---------------------------------------------
+
+  GPIO 방식은 별도 라이브러리 불필요 (digitalRead 사용)
+
+  UART 방식 (더 정확한 데이터 원할 때):
+  Arduino IDE → 라이브러리 관리 → "LD2410" 검색 → 설치
+
+---[ ESP32_dfplayer.ino 수정 방법 ] ---------------------------
+
+  ① setup() 에 핀 모드 설정 추가:
+
+  현재 setup() 안 (BUTTON_PIN 설정 아래에 추가):
+  ┌─────────────────────────────────────────────────────────┐
+  │   // 아케이드 버튼                                       │
+  │   pinMode(BUTTON_PIN, INPUT_PULLUP);                    │
+  │   DBGLN("[OK] 아케이드 버튼 GPIO" + String(BUTTON_PIN));│
+  └─────────────────────────────────────────────────────────┘
+
+  아래에 추가:
+  ┌─────────────────────────────────────────────────────────┐
+  │   // mmWave 레이더 센서                                  │
+  │   pinMode(MMWAVE_PIN, INPUT);                           │
+  │   DBGLN("[OK] mmWave 센서 GPIO" + String(MMWAVE_PIN));  │
+  └─────────────────────────────────────────────────────────┘
+
+  ② sendSensorData() 에서 mmwave 더미값 교체:
+
+  현재:
+    bool  mmwave = true;   ← 이 줄을 아래로 교체
+
+  수정 후:
+  ┌─────────────────────────────────────────────────────────┐
+  │   // ── mmWave 센서 읽기 ──────────────────────────────  │
+  │   bool mmwave = digitalRead(MMWAVE_PIN) == HIGH;        │
+  │   DBGF("[mmWave] 감지: %s\n", mmwave ? "있음" : "없음");│
+  └─────────────────────────────────────────────────────────┘
+
+---[ 감도 조절 방법 ] -----------------------------------------
+
+  LD2410 센서는 핀 헤더로 감도 설정 가능:
+  - 거리 감지 범위: 점퍼 또는 UART 명령으로 설정
+  - 기본 감지 거리: 약 5m (욕실은 1~2m 로 줄이는 게 좋음)
+  - Bluetooth 앱 "HLKRadarTool" 로 스마트폰에서 설정 가능
+
+---[ 테스트 방법 ] --------------------------------------------
+
+  시리얼 모니터에서:
+  [mmWave] 감지: 있음   ← 사람 있을 때
+  [mmWave] 감지: 없음   ← 사람 없을 때
+
+  테스트:
+  - 센서 앞에 서기 → mmwave = true
+  - 센서 앞에서 멀리 가기 → mmwave = false (약 3~5초 후)
+
+
+================================================================
+PART 4. Raspberry Pi Pico — 서보모터 제어 및 각도 전송
+================================================================
+
+---[ 이게 뭔가요? ] -------------------------------------------
+
+  Pico가 서보모터를 35°~140° 범위에서 돌리면서
+  ToF 센서가 여러 각도에서 거리를 측정합니다.
+  Pico는 현재 서보 각도를 UART로 ESP32에 전달합니다.
+  ESP32는 그 각도 값을 Flask 서버로 보냅니다.
+
+---[ 배선 연결 방법 ] -----------------------------------------
+
+  서보모터 → Pico:
+  서보 핀      │  Pico 핀
+  ────────────┼──────────
+  빨간선 (VCC)│  VBUS (5V) 또는 외부 5V 전원
+  갈색선 (GND)│  GND
+  주황선 (PWM)│  GP15  (또는 원하는 PWM 핀)
+
+  Pico → ESP32 UART:
+  Pico 핀     │  ESP32 핀        │ 설명
+  ────────────┼──────────────────┼──────────────
+  GP4 (TX)    │  GPIO25 (PICO_RX)│ Pico TX → ESP32 RX
+  GP5 (RX)    │  GPIO26 (PICO_TX)│ Pico RX ← ESP32 TX
+  GND         │  GND             │ 반드시 GND 공통 연결!
+
+  ※ 두 보드의 GND 를 반드시 연결해야 통신이 됩니다.
+  ※ Pico의 VBUS로 서보 전원을 공급하면 전류가 부족할 수 있습니다.
+     서보 전류가 크면 외부 5V 전원을 별도로 사용하세요.
+
+---[ Pico 코드 (MicroPython) — 새 파일로 저장 ] ---------------
+
+  파일명: ESP32_example/pico_servo.py
+  Pico에 이 코드를 업로드합니다 (Thonny IDE 사용).
+
+  ─────────────────────────────────────────────────────────
+  # pico_servo.py
+  # Raspberry Pi Pico — 서보모터 제어 + ESP32 UART 각도 전송
+
+  from machine import Pin, PWM, UART
+  import time
+
+  # ── 설정 ──────────────────────────────────────────────
+  SERVO_PIN   = 15       # 서보모터 PWM 핀 (GP15)
+  UART_ID     = 0        # UART0 사용 (TX=GP0, RX=GP1)
+                         # ※ GP4/GP5 사용 시: UART_ID = 1
+  BAUD_RATE   = 9600
+
+  ANGLE_MIN   = 35       # 스캔 시작 각도
+  ANGLE_MAX   = 140      # 스캔 끝 각도
+  SCAN_STEP   = 5        # 한 번에 몇 도씩 움직일지
+  SCAN_DELAY  = 0.35     # 각도마다 대기 시간(초)
+
+  # ── 초기화 ──────────────────────────────────────────────
+  servo = PWM(Pin(SERVO_PIN))
+  servo.freq(50)  # 서보 주파수 50Hz
+
+  uart = UART(UART_ID, baudrate=BAUD_RATE)
+
+  # ── 각도 → PWM 변환 함수 ────────────────────────────────
+  def set_angle(angle):
+      # SG90 기준: 0° = 500us, 180° = 2500us
+      min_us = 500
+      max_us = 2500
+      us = min_us + (max_us - min_us) * angle / 180
+      duty = int(us / 20000 * 65535)
+      servo.duty_u16(duty)
+
+  # ── 각도를 ESP32로 전송 ──────────────────────────────────
+  def send_angle(angle):
+      msg = f"ANGLE:{angle}\n"
+      uart.write(msg.encode())
+
+  # ── 메인 루프 ────────────────────────────────────────────
+  current_angle = ANGLE_MIN
+  direction = 1   # 1 = 증가, -1 = 감소
+
+  print("Pico 서보 제어 시작")
+
+  while True:
+      # 서보 각도 설정
+      set_angle(current_angle)
+
+      # ESP32에 현재 각도 전송
+      send_angle(current_angle)
+
+      print(f"각도: {current_angle}°")
+
+      time.sleep(SCAN_DELAY)
+
+      # 다음 각도 계산 (35°~140° 왕복)
+      current_angle += SCAN_STEP * direction
+      if current_angle >= ANGLE_MAX:
+          current_angle = ANGLE_MAX
+          direction = -1
+      elif current_angle <= ANGLE_MIN:
+          current_angle = ANGLE_MIN
+          direction = 1
+  ─────────────────────────────────────────────────────────
+
+---[ Pico 코드 업로드 방법 (Thonny IDE) ] ----------------------
+
+  1. Thonny 설치: https://thonny.org
+  2. Pico를 USB로 PC에 연결
+  3. Thonny 오른쪽 하단 → "MicroPython (Raspberry Pi Pico)" 선택
+  4. 새 파일 → 위 코드 붙여넣기
+  5. 파일 → 저장 → "Raspberry Pi Pico" 선택 → main.py 로 저장
+     ※ main.py 로 저장하면 Pico 전원 켤 때 자동 실행됩니다.
+  6. 실행 버튼(▶) 클릭 → Thonny 하단에 "각도: 35°" 출력 확인
+
+---[ ESP32_dfplayer.ino 수정 방법 ] ---------------------------
+
+  ① 파일 상단 전역 변수 선언부에 추가:
+
+  현재 (line 27~28 근처):
+  ┌─────────────────────────────────────────────────────────┐
+  │ HardwareSerial dfSerial(2);   // UART2: DFPlayer       │
+  │ DFRobotDFPlayerMini myDF;                               │
+  └─────────────────────────────────────────────────────────┘
+
+  수정 후:
+  ┌─────────────────────────────────────────────────────────┐
+  │ HardwareSerial dfSerial(2);   // UART2: DFPlayer       │
+  │ DFRobotDFPlayerMini myDF;                               │
+  │ HardwareSerial picoSerial(1); // UART1: Pico 통신      │
+  │ int lastPicoAngle = 88;       // Pico 마지막 수신 각도  │
+  │ String picoStatus = "stopped";// Pico 서보 상태         │
+  └─────────────────────────────────────────────────────────┘
+
+  ② setup() 에 Pico UART 초기화 추가:
+
+  (DFPlayer 초기화 바로 아래에 추가)
+  ┌─────────────────────────────────────────────────────────┐
+  │   // Pico UART 초기화                                   │
+  │   picoSerial.begin(PICO_BAUD, SERIAL_8N1,               │
+  │                    PICO_RX_PIN, PICO_TX_PIN);           │
+  │   DBGLN("[OK] Pico UART 초기화 (RX=" +                  │
+  │          String(PICO_RX_PIN) + ")");                    │
+  └─────────────────────────────────────────────────────────┘
+
+  ③ loop() 에 Pico 데이터 읽기 추가:
+
+  현재 loop() (line 130~157):
+  ┌─────────────────────────────────────────────────────────┐
+  │ void loop() {                                           │
+  │   ensureWiFi();                                         │
+  │   unsigned long now = millis();                         │
+  │                                                         │
+  │   if (now - lastAudioMs >= AUDIO_INTERVAL_MS) { ... }  │
+  │   if (now - lastDataMs  >= DATA_INTERVAL_MS)  { ... }  │
+  │   if (now - lastButtonMs >= 50) { ... }                 │
+  │   checkPlayFinished();                                  │
+  │   delay(10);                                            │
+  │ }                                                       │
+  └─────────────────────────────────────────────────────────┘
+
+  수정 후 (readPicoData() 추가):
+  ┌─────────────────────────────────────────────────────────┐
+  │ void loop() {                                           │
+  │   ensureWiFi();                                         │
+  │   readPicoData();          // ← 추가                    │
+  │   unsigned long now = millis();                         │
+  │   ...                                                   │
+  │ }                                                       │
+  └─────────────────────────────────────────────────────────┘
+
+  ④ readPicoData() 함수 추가 (파일 어디든 추가):
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ void readPicoData() {                                   │
+  │   // Pico 가 "ANGLE:88\n" 형식으로 전송                  │
+  │   while (picoSerial.available()) {                      │
+  │     String line = picoSerial.readStringUntil('\n');     │
+  │     line.trim();                                        │
+  │     if (line.startsWith("ANGLE:")) {                    │
+  │       int angle = line.substring(6).toInt();            │
+  │       if (angle >= 0 && angle <= 180) {                 │
+  │         lastPicoAngle = angle;                          │
+  │         picoStatus    = "scanning";                     │
+  │         DBGF("[PICO] 각도 수신: %d°\n", angle);        │
+  │       }                                                 │
+  │     } else if (line.startsWith("STATUS:")) {           │
+  │       picoStatus = line.substring(7);                   │
+  │     }                                                   │
+  │   }                                                     │
+  │ }                                                       │
+  └─────────────────────────────────────────────────────────┘
+
+  ⑤ sendSensorData() 에서 angle 더미값 교체:
+
+  현재:
+    int   angle  = 88;   ← 이 줄을 아래로 교체
+
+  수정 후:
+  ┌─────────────────────────────────────────────────────────┐
+  │   int angle = lastPicoAngle;  // Pico 에서 받은 실제 각도│
+  └─────────────────────────────────────────────────────────┘
+
+  ⑥ JSON 전송 부분에 servo_status 도 실제 값으로 교체:
+
+  현재:
+    doc["servo_status"] = "stopped";   ← 이 줄 교체
+
+  수정 후:
+    doc["servo_status"] = picoStatus;  ← Pico 상태 반영
+
+---[ 테스트 방법 ] --------------------------------------------
+
+  Pico와 ESP32 연결 후 ESP32 시리얼 모니터에서:
+  [PICO] 각도 수신: 35°
+  [PICO] 각도 수신: 40°
+  [DATA] 전송 완료 · height=68.3 · angle=40 · door=closed
+
+  대시보드에서:
+  - "감지 각도" 항목이 35~140 사이에서 변함
+  - "서보 상태" 항목이 scanning 으로 바뀜
+  - 욕실 캔버스 맵에서 노란 점선이 움직임
+
+
+================================================================
+PART 5. 세 가지를 한꺼번에 적용한 최종 sendSensorData()
+================================================================
+
+  모든 센서를 연결한 후의 sendSensorData() 전체 모습:
+  (ESP32_dfplayer.ino 의 sendSensorData() 함수를 이것으로 교체)
+
+  ─────────────────────────────────────────────────────────
+  void sendSensorData() {
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    // ── ToF 센서 (VL53L0X) — 높이 측정 ─────────────────
+    float height = 0.0;
+    String tofStatus = "error";
+    if (tofReady && tof.isRangeComplete()) {
+      uint16_t mm = tof.readRangeResult();
+      height = mm / 10.0;
+      if (height > 250.0) {
+        height = 0.0;
+        tofStatus = "error";
+      } else if (height < 50.0) {
+        tofStatus = "low";
+      } else {
+        tofStatus = "normal";
+      }
+    }
+
+    // ── mmWave 레이더 — 사람 존재 감지 ──────────────────
+    bool mmwave = (digitalRead(MMWAVE_PIN) == HIGH);
+
+    // ── Pico UART — 서보 각도 ────────────────────────────
+    int angle = lastPicoAngle;
+
+    // ── 낙상 판단 ────────────────────────────────────────
+    bool fallCandidate = (height > 0 && height < 50.0 && mmwave);
+    bool fallDetected  = (height > 0 && height < 20.0 && mmwave);
+
+    // ── 문 센서 (BL0303) ─────────────────────────────────
+    bool   doorOpen  = (digitalRead(DOOR_PIN) == HIGH);
+    String doorState = doorOpen ? "open" : "closed";
+
+    // ── JSON 전송 ─────────────────────────────────────────
+    StaticJsonDocument<256> doc;
+    doc["height"]         = height;
+    doc["angle"]          = angle;
+    doc["tof_status"]     = tofStatus;
+    doc["mmwave"]         = mmwave;
+    doc["door"]           = doorState;
+    doc["fall_candidate"] = fallCandidate;
+    doc["fall_detected"]  = fallDetected;
+    doc["servo_status"]   = picoStatus;
+
+    String payload;
+    serializeJson(doc, payload);
+
+    HTTPClient http;
+    String url = String("http://") + SERVER_IP + ":" + SERVER_PORT + "/data";
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(2000);
+
+    int code = http.POST(payload);
+    if (code == 200) {
+      DBGF("[DATA] height=%.1f tof=%s mmwave=%d angle=%d door=%s\n",
+           height, tofStatus.c_str(), mmwave, angle, doorState.c_str());
+      digitalWrite(LED_PIN, HIGH);
+    } else {
+      DBGF("[DATA] 전송 실패: HTTP %d\n", code);
+      digitalWrite(LED_PIN, LOW);
+    }
+    http.end();
+  }
+  ─────────────────────────────────────────────────────────
+
+
+================================================================
+PART 6. 낙상 판단 기준값 조정
+================================================================
+
+  낙상 판단 기준은 sendSensorData() 안의 이 두 줄입니다:
+
+    bool fallCandidate = (height > 0 && height < 50.0 && mmwave);
+    bool fallDetected  = (height > 0 && height < 20.0 && mmwave);
+
+  ─── 수정 방법 ───────────────────────────────────────────
+
+  height < 50.0  → fallCandidate (낙상 의심)
+  height < 20.0  → fallDetected  (낙상 확정)
+
+  욕실 높이에 따라 이 숫자를 조정하세요:
+
+  예시 (천장 높이 2.4m 기준, 센서 천장에 부착):
+  - 사람이 서 있을 때: 약 70~90cm (센서~머리 거리)
+  - 사람이 앉아 있을 때: 약 120~150cm
+  - 사람이 넘어졌을 때: 약 170~210cm
+  ※ 넘어졌을 때 오히려 거리가 커짐! (센서에서 바닥까지)
+
+  → 위 경우라면 기준값을 이렇게 바꾸세요:
+    bool fallCandidate = (height > 150.0 && mmwave);
+    bool fallDetected  = (height > 180.0 && mmwave);
+
+  ─── 기준값을 찾는 방법 ──────────────────────────────────
+
+  1. Flask 서버 실행 + ESP32 연결
+  2. 대시보드 왼쪽 상단 "현재 높이" 값을 관찰
+  3. 다양한 자세에서 높이값 기록:
+     - 서 있을 때: ___cm
+     - 앉아 있을 때: ___cm
+     - 누워 있을 때: ___cm
+  4. 중간값을 fallCandidate 기준으로 설정
+
+
+================================================================
+PART 7. 수정 파일 목록 최종 요약
+================================================================
+
+  수정해야 할 파일 2개:
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ 파일                            │ 수정 내용            │
+  ├─────────────────────────────────┼──────────────────────┤
+  │ ESP32_example/config.h          │ 새 핀 번호 추가      │
+  │                                 │ (TOF/mmWave/Pico 핀) │
+  ├─────────────────────────────────┼──────────────────────┤
+  │ ESP32_example/ESP32_dfplayer.ino│ #include 추가        │
+  │                                 │ 전역 변수 추가       │
+  │                                 │ setup() 초기화 추가  │
+  │                                 │ loop() 에 readPico() │
+  │                                 │ sendSensorData() 교체│
+  └─────────────────────────────────┴──────────────────────┘
+
+  새로 만들 파일 1개:
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ ESP32_example/pico_servo.py     │ Pico MicroPython 코드│
+  │                                 │ Thonny 로 Pico 에    │
+  │                                 │ main.py 로 저장      │
+  └─────────────────────────────────┴──────────────────────┘
+
+  건드리지 않아도 되는 파일:
+  - app.py, config.py         (서버 — 이미 완성)
+  - templates/*, static/*     (웹 UI — 이미 완성)
+  - .env                      (PIN 코드 — 이미 설정)
+
+================================================================
+PART 8. 센서별 연결 확인 체크리스트
+================================================================
+
+  센서 하나씩 순서대로 연결하고 확인하세요.
+
+  □ STEP 1: config.h 에 핀 번호 추가 완료
+  □ STEP 2: VL53L0X 배선 연결 (VCC=3.3V, GND, SDA=21, SCL=22)
+  □ STEP 3: Arduino 라이브러리 "Adafruit VL53L0X" 설치
+  □ STEP 4: include 및 초기화 코드 추가 후 업로드
+  □ STEP 5: 시리얼 모니터에서 "[OK] VL53L0X ToF 센서 초기화 완료" 확인
+  □ STEP 6: height 값이 실제 거리(cm)로 출력되는지 확인
+  □ STEP 7: mmWave 배선 연결 (OUT→GPIO35)
+  □ STEP 8: pinMode + digitalRead 코드 추가 후 업로드
+  □ STEP 9: 시리얼 모니터에서 "[mmWave] 감지: 있음/없음" 확인
+  □ STEP 10: Pico에 pico_servo.py 업로드 (main.py로 저장)
+  □ STEP 11: Pico-ESP32 UART 배선 연결 (GND 공통 필수!)
+  □ STEP 12: picoSerial 초기화 + readPicoData() 추가 후 업로드
+  □ STEP 13: 시리얼 모니터에서 "[PICO] 각도 수신: 35°" 확인
+  □ STEP 14: 대시보드에서 세 값 모두 실시간으로 변하는지 확인
+
+================================================================
+작성일: 2026-05-25
+프로젝트: Smart Bath Guard (bearbearss/iot)
+================================================================
