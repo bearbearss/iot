@@ -15,6 +15,7 @@ except ImportError:
 
 import json as _json
 import config as _cfg
+import kakao_notify as _kakao
 
 # ── 런타임 설정 (config.py 기본값 + settings.json 덮어쓰기) ─
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
@@ -198,6 +199,14 @@ system_sm     = {"state": "EMPTY", "prev_state": None, "changed_at": None}
 state_history = deque(maxlen=30)
 
 
+def _send_kakao_alert():
+    ok = _kakao.send_fall_alert()
+    add_event(
+        "카카오 보호자 알림 전송 성공" if ok else "카카오 보호자 알림 전송 실패",
+        "fall" if ok else "warning",
+    )
+
+
 def check_response_timeout():
     """응답 제한 시간 초과 → 보호자 알림 전환"""
     if response_state["mode"] == "awaiting" and response_state["deadline_ts"]:
@@ -205,6 +214,7 @@ def check_response_timeout():
             response_state["mode"] = "notified"
             add_event("응답 없음 — 보호자에게 알림 전송됨", "fall")
             _transition_state(compute_system_state())
+            threading.Thread(target=_send_kakao_alert, daemon=True).start()
 
 
 # ── 상태 머신 헬퍼 ─────────────────────────────────────────
