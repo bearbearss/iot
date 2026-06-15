@@ -17,12 +17,11 @@
 #pragma once
 
 // ── WiFi 설정 ─────────────────────────────────────────────
-#define WIFI_SSID       "공유기이름"       // ← 수정 필수
-#define WIFI_PASSWORD   "WiFi비밀번호"    // ← 수정 필수
-
-// ── Raspberry Pi 서버 ─────────────────────────────────────
-#define SERVER_IP       "192.168.0.xxx"  // ← 수정 필수  (hostname -I 로 확인)
-#define SERVER_PORT     5000
+const char* WIFI_SSID     = "305"; //이주한의 iPhone
+const char* WIFI_PASSWORD = "10041004";
+const char* SERVER_IP     = "192.168.201.1";
+const int   SERVER_PORT   = 5000;
+const int   POST_INTERVAL = 3000;
 
 // ── 핀 번호 ───────────────────────────────────────────────
 #define DOOR_PIN        27    // BL0303 자석 스위치 (INPUT_PULLUP)

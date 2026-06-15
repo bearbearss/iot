@@ -31,4 +31,4 @@ WIFI_PASSWORD  = os.environ.get("WIFI_PASSWORD",  "password")
 
 # ── ESP32 연결 감시 ────────────────────────────────────────
 #   이 시간(초) 동안 데이터가 없으면 "연결 끊김"으로 표시
-ESP32_TIMEOUT_S = int(os.environ.get("ESP32_TIMEOUT_S", 15))
+ESP32_TIMEOUT_S = int(os.environ.get("ESP32_TIMEOUT_S", 10))

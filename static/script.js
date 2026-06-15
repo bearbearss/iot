@@ -5,7 +5,8 @@
 const POLL_MS = 1000;
 
 // ── 상태 메모 ─────────────────────────────────────────────
-let prevFallState   = false;
+let prevFallState    = false;
+let prevResponseMode = "idle";
 let currentTab      = 'canvas';
 let radarChart      = null;
 let scanDataStore   = {};   // 스캔 완료 후 저장
@@ -138,9 +139,12 @@ function updateHero(data) {
   }
 
   // 낙상 감지 특수 처리
+  const rsMode = data.response_state?.mode || "idle";
   if (data.fall_detected && !prevFallState) triggerFallAlert();
   if (!data.fall_detected && prevFallState) clearFallAlert();
-  prevFallState = !!data.fall_detected;
+  if (rsMode === "notified" && prevResponseMode !== "notified") triggerFallAlert();
+  prevFallState    = !!data.fall_detected;
+  prevResponseMode = rsMode;
 }
 
 
@@ -193,6 +197,9 @@ function updateSensorCards(data) {
                  data.tof_status==="low"    ? "sc-warn" :
                  data.tof_status==="normal" ? "sc-ok"   : "sc-dim";
 
+  const FALL_STATES = ["FALL_DETECTED", "NO_RESPONSE"];
+  const WARN_STATES = ["FALL_CANDIDATE", "ASK_USER", "WAIT_RESPONSE"];
+
   const entries = [
     ["scHeight",  disp(data.height,""),    data.fall_detected?"sc-err":data.fall_candidate?"sc-warn":""],
     ["scAngle",   disp(data.angle,""),     ""],
@@ -203,15 +210,20 @@ function updateSensorCards(data) {
     ["scFallC",   data.fall_candidate?"의심됨":"없음",  data.fall_candidate?"sc-warn":"sc-ok"],
     ["scFallD",   data.fall_detected?"낙상!":"없음",     data.fall_detected?"sc-err":"sc-ok"],
     ["scServo",   disp(data.servo_status), data.servo_status==="alert"?"sc-err":
-                                           data.servo_status==="checking"?"sc-warn":"sc-ok"],
+                                           data.servo_status==="scanning"||data.servo_status==="checking"?"sc-warn":"sc-ok"],
+    ["scRise",    data.heightRise != null ? Number(data.heightRise).toFixed(1) : "-",
+                  data.heightRise >= 3.5 ? "sc-warn" : "sc-ok"],
+    ["scButton",  data.button ? "눌림" : "없음",  data.button ? "sc-warn" : "sc-ok"],
+    ["scState",   data.state || "-",
+                  FALL_STATES.includes(data.state) ? "sc-err" :
+                  WARN_STATES.includes(data.state) ? "sc-warn" : "sc-ok"],
   ];
 
   entries.forEach(([id, val, cls]) => {
     setText(id, val, cls);
-    flash(id.replace("sc","sc"));  // flash parent scard
   });
   // Flash scard parents
-  for (let i=0;i<8;i++) flash(`sc${i}`);
+  for (let i=0;i<11;i++) flash(`sc${i}`);
 }
 
 
@@ -833,10 +845,13 @@ function updateConnBar(conn) {
       const ago = conn.esp32_last_seen
         ? Math.round(Date.now()/1000 - conn.esp32_last_seen) + "초 전"
         : "";
-      note.textContent = `ESP32 연결됨 · ${conn.esp32_ip || ""} ${ago}`;
+      note.textContent = `ESP32 연결됨 · IP: ${conn.esp32_ip || "-"} · ${ago}`;
       note.style.color = "var(--txt3)";
     } else {
-      note.textContent = "ESP32 미연결 — config.h SERVER_IP 확인";
+      const ago = conn.esp32_last_seen
+        ? Math.round(Date.now()/1000 - conn.esp32_last_seen) + "초 전 수신"
+        : "수신 없음";
+      note.textContent = `ESP32 연결 끊김 · IP: ${conn.esp32_ip || "-"} · 마지막: ${ago}`;
       note.style.color = "rgba(255,183,0,.7)";
     }
   }

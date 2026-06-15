@@ -13,6 +13,7 @@ try:
 except ImportError:
     pass
 
+
 import json as _json
 import config as _cfg
 import kakao_notify as _kakao
@@ -47,9 +48,9 @@ app.permanent_session_lifetime = timedelta(hours=24)
 
 # ── 하드웨어 연결 상태 추적 ────────────────────────────────
 connection_status = {
-    "esp32_last_seen": None,  # Unix ts — 마지막 데이터 수신 시각
-    "esp32_ip":        None,  # ESP32 IP 주소
-    "cloudflare_url":  os.environ.get("TUNNEL_URL", ""),  # 시작 시 환경변수로도 설정 가능
+    "esp32_last_seen": None,
+    "esp32_ip":        None,
+    "cloudflare_url":  os.environ.get("TUNNEL_URL", ""),
 }
 
 # ── 센서 상태 ──────────────────────────────────────────────
@@ -59,10 +60,11 @@ latest_data = {
     "fall_candidate": False, "fall_detected": False,
     "servo_status": "stopped", "timestamp": None,
     "occupancy_state": "empty", "occupied": False,
+    "heightRise": None, "button": False, "state": "IDLE",
 }
 log_history = deque(maxlen=20)
 
-# ── 이벤트 로그 (문/입퇴실/낙상/오디오) ───────────────────
+# ── 이벤트 로그 ───────────────────────────────────────────
 event_log = deque(maxlen=100)
 
 def add_event(msg: str, etype: str = "info"):
@@ -73,24 +75,22 @@ def add_event(msg: str, etype: str = "info"):
     })
     print(f"[EVENT][{etype.upper()}] {msg}")
 
-# ── 입퇴실 추적 (BL0303 문센서 + mmWave) ─────────────────
+# ── 입퇴실 추적 ─────────────────────────────────────────
 occupancy = {
-    "state":        "empty",   # empty | occupied | long_stay
+    "state":        "empty",
     "occupied":     False,
     "door_prev":    None,
     "door_open_ts": None,
     "occupied_since": None,
-    "long_stay_threshold_s": 1800,  # 30분
+    "long_stay_threshold_s": 1800,
 }
 
 def update_occupancy(data: dict):
-    """문 열림/닫힘 + mmWave로 입퇴실 판단 (BL0303)"""
     global occupancy
     door   = data.get("door",   "unknown")
     mmwave = data.get("mmwave", False)
     now    = datetime.now()
 
-    # 알 수 없는 문 상태는 건너뜀
     if door not in ("open", "closed"):
         occupancy["door_prev"] = door
         data["occupancy_state"] = occupancy["state"]
@@ -100,34 +100,27 @@ def update_occupancy(data: dict):
     prev = occupancy["door_prev"]
 
     if prev is not None and door != prev:
-        # 문 열림 전환
         if door == "open":
             occupancy["door_open_ts"] = now
             add_event("문 열림", "door")
-
-        # 문 닫힘 전환
         elif door == "closed":
             add_event("문 닫힘", "door")
             if mmwave and not occupancy["occupied"]:
-                # 입실: 문이 닫히고 mmWave 사람 감지
                 occupancy.update({"state": "occupied", "occupied": True,
                                   "occupied_since": now})
                 add_event("사용자 입실", "occupancy")
-                # 입실 시 배경 음악 자동 재생
                 if not audio_state["playing"]:
                     _queue_audio({"command": "play", "track": 1})
                     audio_state.update({"playing": True, "current_track": 1,
                                         "current_name": TRACK_NAMES[1], "mode": "music"})
                     add_event("배경 음악 자동 재생 (입실)", "audio")
             elif not mmwave and occupancy["occupied"]:
-                # 퇴실: 문이 닫히고 mmWave 감지 없음
                 occupancy.update({"state": "empty", "occupied": False,
                                   "occupied_since": None})
                 add_event("사용자 퇴실", "occupancy")
                 _full_exit_reset(data)
                 add_event("낙상·오디오 상태 초기화 (퇴실)", "audio")
 
-    # 장시간 체류 체크
     if (occupancy["state"] == "occupied" and occupancy["occupied_since"]):
         elapsed = (now - occupancy["occupied_since"]).total_seconds()
         if elapsed >= occupancy["long_stay_threshold_s"]:
@@ -144,7 +137,7 @@ scan_state = {
     "progress": 0, "completed": False, "scan_data": {}
 }
 
-# ── 오디오 상태 (DFPlayer Mini + SD카드) ──────────────────
+# ── 오디오 상태 ──────────────────────────────────────────
 TRACK_NAMES = {
     0: "없음",
     1: "0001.mp3  평상시 배경 음악",
@@ -169,16 +162,16 @@ def _queue_audio(cmd: dict):
     print(f"[AUDIO CMD] → {cmd}")
 
 
-# ── 낙상 응답 대기 (60mm LED 아케이드 버튼 연동) ──────────
+# ── 낙상 응답 대기 ──────────────────────────────────────
 response_state = {
-    "mode":        "idle",  # idle | awaiting | responded | notified
-    "fall_ts":     None,    # Unix timestamp (낙상 감지 시각)
-    "deadline_ts": None,    # Unix timestamp (응답 제한 시각)
-    "respond_ts":  None,    # Unix timestamp (응답 확인 시각)
-    "timeout_s":   60,      # 응답 대기 제한 시간 (초)
+    "mode":        "idle",
+    "fall_ts":     None,
+    "deadline_ts": None,
+    "respond_ts":  None,
+    "timeout_s":   60,
 }
 
-recovery_until = None   # float | None — 응답 후 복구 창 종료 Unix ts
+recovery_until = None
 
 # ── 12-상태 시스템 상태 머신 ───────────────────────────────
 STATE_INFO = {
@@ -208,7 +201,6 @@ def _send_kakao_alert():
 
 
 def check_response_timeout():
-    """응답 제한 시간 초과 → 보호자 알림 전환"""
     if response_state["mode"] == "awaiting" and response_state["deadline_ts"]:
         if time.time() > response_state["deadline_ts"]:
             response_state["mode"] = "notified"
@@ -294,7 +286,6 @@ def compute_fall_confidence() -> int:
 
 
 def _full_exit_reset(incoming: dict):
-    """퇴실 시 낙상/응답/오디오 상태 전체 초기화"""
     global recovery_until
     response_state.update({
         "mode": "idle", "fall_ts": None,
@@ -332,7 +323,6 @@ def save_data(incoming: dict):
 
     incoming["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 입퇴실 추적 (incoming에 occupancy_state, occupied 필드 추가됨)
     update_occupancy(incoming)
 
     latest_data = copy.deepcopy(incoming)
@@ -340,7 +330,6 @@ def save_data(incoming: dict):
     log_entry["status"] = determine_status(incoming)
     log_history.appendleft(log_entry)
 
-    # ── 낙상 감지 전환 ──────────────────────────────────────
     if incoming.get("fall_detected") and not prev_fall_detected:
         add_event("낙상 감지!", "fall")
         _queue_audio({"command": "stop"})
@@ -350,7 +339,6 @@ def save_data(incoming: dict):
             "current_name": TRACK_NAMES[2], "mode": "fall"
         })
         add_event("경고음 출력 중 (0002.mp3)", "audio")
-        # 응답 대기 타이머 시작 (LED 버튼 점등 신호)
         if response_state["mode"] == "idle":
             now_ts = time.time()
             response_state.update({
@@ -361,7 +349,6 @@ def save_data(incoming: dict):
             })
             add_event(f"사용자 응답 대기 중 ({response_state['timeout_s']}초)", "warning")
 
-    # ── 낙상 의심 전환 ──────────────────────────────────────
     elif incoming.get("fall_candidate") and not prev_fall_candidate:
         add_event("낙상 의심 감지", "warning")
         if audio_state["playing"]:
@@ -373,7 +360,6 @@ def save_data(incoming: dict):
         })
         add_event("음성 출력 중 (괜찮으십니까?)", "audio")
 
-    # ── 정상 복귀 ────────────────────────────────────────────
     elif not incoming.get("fall_detected") and not incoming.get("fall_candidate"):
         if audio_state["mode"] in ("fall", "warning"):
             audio_state.update({
@@ -467,7 +453,7 @@ def index():
 @app.route("/api/latest")
 @login_required
 def api_latest():
-    check_response_timeout()   # 응답 타임아웃 체크
+    check_response_timeout()
     resp = copy.deepcopy(latest_data)
     resp["status"]          = determine_status(latest_data)
     resp["scan_state"]      = copy.deepcopy(scan_state)
@@ -479,7 +465,7 @@ def api_latest():
     resp["state_history"]   = list(state_history)[:10]
     resp["fall_confidence"] = compute_fall_confidence()
     esp32_last = connection_status["esp32_last_seen"]
-    esp32_ok   = bool(esp32_last and (time.time() - esp32_last) < runtime_config.get("esp32_timeout", 15))
+    esp32_ok   = bool(esp32_last and (time.time() - esp32_last) < runtime_config.get("esp32_timeout", 10))
     pico_ok    = esp32_ok and latest_data.get("servo_status") not in (None, "error")
     resp["connection"] = {
         "esp32_ok":        esp32_ok,
@@ -500,7 +486,6 @@ def api_logs():
 @app.route("/api/events")
 @login_required
 def api_events():
-    """실시간 이벤트 로그 (문/입퇴실/낙상/오디오)"""
     return jsonify(list(event_log)), 200
 
 
@@ -589,7 +574,7 @@ def audio_volume():
     return jsonify({"status": "ok", "volume": vol}), 200
 
 
-# ── ESP32 오디오 명령 폴링 (인증 없음 - 내부망) ─────────────
+# ── ESP32 오디오 명령 폴링 ─────────────────────────────────
 @app.route("/esp32/audio-command", methods=["GET"])
 def esp32_audio_command():
     if audio_cmd_queue:
@@ -598,7 +583,7 @@ def esp32_audio_command():
     return jsonify({"command": "none"}), 200
 
 
-# ── ESP32 데이터 수신 (인증 없음) ──────────────────────────
+# ── ESP32 데이터 수신 (수정됨) ─────────────────────────────
 @app.route("/data", methods=["POST"])
 def receive_data():
     if not request.is_json:
@@ -606,6 +591,37 @@ def receive_data():
     data = request.get_json()
     connection_status["esp32_last_seen"] = time.time()
     connection_status["esp32_ip"]        = request.remote_addr
+
+    # ── ESP32 state 문자열 → fall_candidate / fall_detected 변환 ──
+    esp_state = data.get("state", "")
+
+    # ESP32가 보내는 "fall" 필드 → fall_detected
+    data["fall_detected"]  = bool(
+        data.get("fall_detected") or
+        data.get("fall", False) or
+        esp_state == "FALL_DETECTED"
+    )
+    # ESP32 state == FALL_CANDIDATE → fall_candidate
+    data["fall_candidate"] = bool(
+        data.get("fall_candidate") or
+        esp_state == "FALL_CANDIDATE"
+    )
+
+    # ToF 상태
+    data["tof_status"]   = "normal" if data.get("height") is not None else "error"
+    # 서보 상태 — ESP32 값 우선, 없으면 기본값 stopped
+    data["servo_status"] = data.get("servo_status", "stopped")
+
+    # ── ESP32 버튼 눌림 → 낙상 응답 처리 ──────────────────
+    if data.get("button", False):
+        if response_state["mode"] in ("awaiting", "notified"):
+            now_ts = time.time()
+            response_state.update({"mode": "responded", "respond_ts": now_ts})
+            global recovery_until
+            recovery_until = now_ts + 8
+            _transition_state(compute_system_state())
+            add_event("사용자 응답 확인 완료 (ESP32 버튼 핀 18)", "occupancy")
+
     save_data(data)
     print(f"[{latest_data['timestamp']}] 수신 from {request.remote_addr}: {data}")
     return jsonify({"status": "ok", "message": "data received"}), 200
@@ -616,7 +632,6 @@ def receive_data():
 @login_required
 def test_normal():
     global recovery_until
-    # 낙상 응답·상태 머신 초기화
     response_state.update({
         "mode": "idle", "fall_ts": None,
         "deadline_ts": None, "respond_ts": None
@@ -638,7 +653,6 @@ def test_warning():
 @app.route("/test/height_drop", methods=["POST"])
 @login_required
 def test_height_drop():
-    """높이 급감 시뮬레이션 (낙상 후보 직전 상태)"""
     save_data({"height": 40.0, "angle": 60, "tof_status": "low",
                "mmwave": True, "door": "closed",
                "fall_candidate": False, "fall_detected": False, "servo_status": "checking"})
@@ -653,22 +667,17 @@ def test_fall():
     return jsonify({"status": "ok"}), 200
 
 
-# ── 입퇴실 / 장시간 체류 시연 테스트 ─────────────────────
 @app.route("/test/enter", methods=["POST"])
 @login_required
 def test_enter():
-    """입실 시뮬레이션: 문 열림 → mmWave 감지 → 문 닫힘"""
-    # 문 열림
     save_data({"height": None, "angle": 88, "tof_status": "normal",
                "mmwave": False, "door": "open",
                "fall_candidate": False, "fall_detected": False, "servo_status": "stopped"})
     time.sleep(0.06)
-    # mmWave 감지 (사람 통과)
     save_data({"height": 168.0, "angle": 85, "tof_status": "normal",
                "mmwave": True, "door": "open",
                "fall_candidate": False, "fall_detected": False, "servo_status": "stopped"})
     time.sleep(0.06)
-    # 문 닫힘 → 입실 확정
     save_data({"height": 168.0, "angle": 88, "tof_status": "normal",
                "mmwave": True, "door": "closed",
                "fall_candidate": False, "fall_detected": False, "servo_status": "stopped"})
@@ -678,7 +687,6 @@ def test_enter():
 @app.route("/test/exit", methods=["POST"])
 @login_required
 def test_exit():
-    """퇴실 시뮬레이션: 문 열림 → mmWave 사라짐 → 문 닫힘"""
     save_data({"height": 168.0, "angle": 88, "tof_status": "normal",
                "mmwave": True, "door": "open",
                "fall_candidate": False, "fall_detected": False, "servo_status": "stopped"})
@@ -696,7 +704,6 @@ def test_exit():
 @app.route("/test/long_stay", methods=["POST"])
 @login_required
 def test_long_stay():
-    """장시간 체류 시뮬레이션 (30분+ 경과 강제 설정)"""
     global occupancy
     if not occupancy["occupied"]:
         occupancy.update({
@@ -713,14 +720,9 @@ def test_long_stay():
     return jsonify({"status": "ok", "message": "장시간 체류 시뮬레이션 완료"}), 200
 
 
-# ── LED 아케이드 버튼 눌림 (인증 없음 - ESP32 내부망) ─────
+# ── LED 아케이드 버튼 (인증 없음 - ESP32 내부망) ─────────
 @app.route("/button/press", methods=["POST"])
 def button_press():
-    """
-    60mm LED 아케이드 버튼 눌림 이벤트 수신.
-    ESP32가 버튼 GPIO HIGH 감지 시 POST.
-    낙상 응답 대기 중이면 "사용자 응답 완료" 처리.
-    """
     if response_state["mode"] in ("awaiting", "notified"):
         global recovery_until
         now_ts = time.time()
@@ -737,7 +739,6 @@ def button_press():
 @app.route("/test/respond", methods=["POST"])
 @login_required
 def test_respond():
-    """낙상 응답 버튼 웹 시뮬레이션 (아케이드 버튼 대체)"""
     if response_state["mode"] in ("awaiting", "notified"):
         global recovery_until
         now_ts = time.time()
@@ -749,14 +750,9 @@ def test_respond():
     return jsonify({"status": "error", "message": "대기 중인 낙상 알림 없음"}), 400
 
 
-# ── Cloudflare Tunnel URL 등록 (start.sh → Flask 전달) ────
+# ── Cloudflare Tunnel URL ──────────────────────────────────
 @app.route("/api/tunnel-url", methods=["GET", "POST"])
 def api_tunnel_url():
-    """
-    GET  : 현재 터널 URL 조회 (인증 불필요)
-    POST : start.sh 가 cloudflared URL 을 Flask 에 등록
-           { "url": "https://xxxx.trycloudflare.com" }
-    """
     if request.method == "GET":
         return jsonify({
             "url":    connection_status["cloudflare_url"],
@@ -776,10 +772,8 @@ def api_tunnel_url():
     return jsonify({"status": "ok", "url": url}), 200
 
 
-# ── API 구조 요약 (개발 참고용) ────────────────────────────
 @app.route("/api/info")
 def api_info():
-    """전체 API 엔드포인트 목록 (인증 없음)"""
     return jsonify({
         "esp32_send":   "POST /data",
         "esp32_audio":  "GET  /esp32/audio-command",
@@ -798,7 +792,6 @@ def api_info():
 
 @app.route("/esp32/config")
 def esp32_config():
-    """ESP32 시작 시 서버에서 설정값 가져오기 (인증 없음 - 내부망)"""
     return jsonify({
         "wifi_ssid":     runtime_config["wifi_ssid"],
         "wifi_password": runtime_config["wifi_password"],
@@ -811,13 +804,13 @@ def esp32_config():
 @login_required
 def api_connection_status():
     esp32_last = connection_status["esp32_last_seen"]
-    esp32_ok   = bool(esp32_last and (time.time() - esp32_last) < runtime_config.get("esp32_timeout", 15))
+    esp32_ok   = bool(esp32_last and (time.time() - esp32_last) < runtime_config.get("esp32_timeout", 10))
     pico_ok    = esp32_ok and latest_data.get("servo_status") not in (None, "error")
     ago        = round(time.time() - esp32_last, 1) if esp32_last else None
     return jsonify({
         "esp32":      {"ok": esp32_ok, "last_seen": esp32_last, "ago_s": ago,
                        "ip": connection_status["esp32_ip"]},
-        "pico":       {"ok": pico_ok,  "note": "UART via ESP32"},
+        "pico":       {"ok": pico_ok,  "note": "UART via ESP32 (GPIO 16/17)"},
         "rpi":        {"ok": True,     "note": "서버 실행 중"},
         "cloudflare": {"ok": bool(connection_status["cloudflare_url"]),
                        "url": connection_status["cloudflare_url"]},
@@ -850,7 +843,6 @@ def api_settings():
 @app.route("/api/raw-data")
 @login_required
 def api_raw_data():
-    """개발자 콘솔용 — 마지막 수신 데이터 + 전체 상태 스냅샷"""
     return jsonify({
         "latest_data":     copy.deepcopy(latest_data),
         "occupancy":       copy.deepcopy(occupancy),
